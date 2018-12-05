@@ -1,4 +1,31 @@
-1.BasicObjectLock类源码
+1.InterpreterRuntime.cpp的InterpreterRuntime::monitorenter
+
+IRT_ENTRY_NO_ASYNC(void, InterpreterRuntime::monitorenter(JavaThread* thread, BasicObjectLock* elem))
+ #ifdef ASSERT0
+   thread->last_frame().interpreter_frame_verify_monitor(elem);
+ #endif
+   if (PrintBiasedLockingStatistics) {
+     Atomic::inc(BiasedLocking::slow_path_entry_count_addr());
+   }
+   Handle h_obj(thread, elem->obj());
+   assert(Universe::heap()->is_in_reserved_or_null(h_obj()),
+          "must be NULL or an object");
+   if (UseBiasedLocking) {//标识虚拟机是否开启偏向锁功能,默认开启
+     // Retry fast entry if bias is revoked to avoid unnecessary inflation
+     ObjectSynchronizer::fast_enter(h_obj, elem->lock(), true, CHECK);
+   } else {
+     ObjectSynchronizer::slow_enter(h_obj, elem->lock(), CHECK);
+   }
+   assert(Universe::heap()->is_in_reserved_or_null(elem->obj()),
+          "must be NULL or an object");
+ #ifdef ASSERT
+   thread->last_frame().interpreter_frame_verify_monitor(elem);
+ #endif
+ IRT_END
+
+---------------------------------- InterpreterRuntime::monitorenter ---------------------------------------------------------------------
+
+2.BasicObjectLock类源码
 
 class BasicObjectLock VALUE_OBJ_CLASS_SPEC {
    friend class VMStructs;
@@ -23,9 +50,9 @@ class BasicObjectLock VALUE_OBJ_CLASS_SPEC {
    static int obj_offset_in_bytes()   { return offset_of(BasicObjectLock, _obj);  }
    static int lock_offset_in_bytes()   { return offset_of(BasicObjectLock, _lock); }
  };
+ -------------------------------------BasicObjectLock---------------------------------------------------------------------------
  
- 
- 2.basicLock.hpp中BasicLock源码
+ 3.basicLock.hpp中BasicLock源码
  
  class BasicLock VALUE_OBJ_CLASS_SPEC {
    friend class VMStructs;
@@ -45,4 +72,26 @@ class BasicObjectLock VALUE_OBJ_CLASS_SPEC {
 		return offset_of(BasicLock, _displaced_header); }
  };
  
+ -----------------------------------BasicLock源码--------------------------------------------------------------------------
+ 4.ObjectSynchronizer::fast_enter方法源码
  
+ void ObjectSynchronizer::fast_enter(Handle obj, BasicLock* lock, bool attempt_rebias, TRAPS) {
+  //是否开启使用偏向锁
+  if (UseBiasedLocking) {
+    //是否到达安全点
+     if (!SafepointSynchronize::is_at_safepoint()) {
+       //获取偏向锁
+       BiasedLocking::Condition cond = BiasedLocking::revoke_and_rebias(obj, attempt_rebias, THREAD);
+       if (cond == BiasedLocking::BIAS_REVOKED_AND_REBIASED) {
+         return;
+       }
+     } else {
+       assert(!attempt_rebias, "can not rebias toward VM thread");
+       BiasedLocking::revoke_at_safepoint(obj);
+     }
+     assert(!obj->mark()->has_bias_pattern(), "biases should be revoked by now");
+  }
+  //获取轻量级锁
+  slow_enter (obj, lock, THREAD) ;
+ }
+--------------------------------------ObjectSynchronizer::fast_enter--------------------------------------------------
